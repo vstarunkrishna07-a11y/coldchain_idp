@@ -11,6 +11,7 @@ from engine import (
     clear_db, generate_pdf_report
 )
 
+
 init_db()
 
 st.set_page_config(
