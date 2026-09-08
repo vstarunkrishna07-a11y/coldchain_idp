@@ -242,34 +242,88 @@ st.sidebar.markdown("""
 # Keep the previous sensor reading so Rate of Change can be calculated
 prev_temp = c_state["cargo_temp"]
 
+# Remember last successfully received telemetry inside this Streamlit session
+if "last_good_telemetry" not in st.session_state:
+    st.session_state["last_good_telemetry"] = None
+
 try:
-    response = requests.get(API_URL, timeout=2)
+    response = requests.get(API_URL, timeout=5)
     response.raise_for_status()
     live_data = response.json()
 
-    c_state["cargo_temp"] = float(live_data["cargo_temp"])
-    c_state["ambient_temp"] = float(live_data["ambient_temp"])
-    humidity = float(live_data["humidity"])
-    cooling_failure = bool(live_data.get("compressor_failure", False))
+    last_updated = live_data.get("last_updated")
 
-    c_state["is_running"] = True
+    # Check whether ESP32 data itself is fresh
+    if last_updated is not None:
+        telemetry_age = time.time() - float(last_updated)
+    else:
+        telemetry_age = float("inf")
 
-    st.sidebar.success("🟢 ESP32 TELEMETRY ONLINE")
-    st.sidebar.caption(
-        f"Shipment: {live_data.get('shipment_id', 'UNKNOWN')}"
-    )
+    if telemetry_age <= 15:
 
-    if cooling_failure:
-        st.sidebar.error("⚠️ COMPRESSOR FAILURE SIGNAL ACTIVE")
+        c_state["cargo_temp"] = float(live_data["cargo_temp"])
+        c_state["ambient_temp"] = float(live_data["ambient_temp"])
+        humidity = float(live_data["humidity"])
+        cooling_failure = bool(
+            live_data.get("compressor_failure", False)
+        )
 
-except Exception as e:
-    humidity = 0.0
-    cooling_failure = False
-    c_state["is_running"] = False
+        st.session_state["last_good_telemetry"] = time.time()
+        c_state["is_running"] = True
 
-    st.sidebar.error("🔴 ESP32 TELEMETRY OFFLINE")
-    st.sidebar.caption(str(e))
+        st.sidebar.success("🟢 ESP32 TELEMETRY ONLINE")
+        st.sidebar.caption(
+            f"Shipment: {live_data.get('shipment_id', 'UNKNOWN')}"
+        )
 
+        if cooling_failure:
+            st.sidebar.error(
+                "⚠️ COMPRESSOR FAILURE SIGNAL ACTIVE"
+            )
+
+    else:
+        # API works, but ESP32 has stopped sending fresh readings
+        humidity = 0.0
+        cooling_failure = False
+        c_state["is_running"] = False
+
+        st.sidebar.error("🔴 ESP32 TELEMETRY OFFLINE")
+        st.sidebar.caption(
+            "No fresh telemetry received from ESP32."
+        )
+
+except Exception:
+
+    # A single temporary Cloudflare/API failure should NOT
+    # immediately declare the ESP32 offline.
+    last_good = st.session_state["last_good_telemetry"]
+
+    if (
+        last_good is not None
+        and time.time() - last_good <= 15
+    ):
+        c_state["is_running"] = True
+        humidity = 0.0
+        cooling_failure = False
+
+        st.sidebar.warning(
+            "🟡 TELEMETRY CONNECTION UNSTABLE"
+        )
+        st.sidebar.caption(
+            "Temporary API interruption — retrying..."
+        )
+
+    else:
+        c_state["is_running"] = False
+        humidity = 0.0
+        cooling_failure = False
+
+        st.sidebar.error(
+            "🔴 ESP32 TELEMETRY OFFLINE"
+        )
+        st.sidebar.caption(
+            "Telemetry connection unavailable."
+        )
 # Optional baseline reset
 st.sidebar.write("")
 if st.sidebar.button("🔄 Reset Thermodynamic Baseline", use_container_width=True):
