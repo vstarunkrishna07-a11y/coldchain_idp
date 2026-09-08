@@ -1,5 +1,6 @@
 from flask import Flask, request, jsonify
 import json
+import time
 
 app = Flask(__name__)
 
@@ -11,10 +12,13 @@ latest_data = {
     "compressor_failure": False
 }
 
+# Time when valid ESP32 telemetry was last received
+last_updated = None
+
 
 @app.route("/telemetry", methods=["POST"])
 def receive_telemetry():
-    global latest_data
+    global latest_data, last_updated
 
     raw_data = request.get_data(as_text=True)
 
@@ -23,6 +27,9 @@ def receive_telemetry():
 
     try:
         latest_data = json.loads(raw_data)
+
+        # Update only after valid telemetry is received
+        last_updated = time.time()
 
         print("\nParsed data:")
         print(latest_data)
@@ -42,7 +49,12 @@ def receive_telemetry():
 
 @app.route("/telemetry", methods=["GET"])
 def get_telemetry():
-    return jsonify(latest_data)
+
+    data = latest_data.copy()
+
+    data["last_updated"] = last_updated
+
+    return jsonify(data)
 
 
 if __name__ == "__main__":
