@@ -14,7 +14,7 @@ from engine import (
 
 
 init_db()
-API_URL = "https://arranged-programmer-initially-emails.trycloudflare.com/telemetry"
+API_URL = "https://richard-supposed-pioneer-root.trycloudflare.com/telemetry"
 
 st.set_page_config(
     page_title="CryoTrace Enterprise | Telematics Gateway",
