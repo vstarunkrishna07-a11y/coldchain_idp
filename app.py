@@ -357,16 +357,18 @@ decay_multiplier = calculate_arrhenius_decay(
     profile["ea_factor"]
 )
 
-# Reduce shelf life according to REAL elapsed time.
-# Previously, 1 full hour was removed on every ~1.8 second Streamlit rerun.
+# Demo-time shelf-life progression.
+# 1 real minute = 1 simulated hour.
+# This keeps the RSL visibly moving during the presentation without
+# destroying the whole shelf life in a few seconds.
 current_time = time.time()
 last_decay_time = c_state.get("last_decay_time", current_time)
-elapsed_hours = max(0.0, (current_time - last_decay_time) / 3600.0)
+elapsed_seconds = max(0.0, current_time - last_decay_time)
 c_state["last_decay_time"] = current_time
 
-# Only consume shelf life while fresh/recent telemetry is available.
 if c_state["is_running"]:
-    hours_lost = elapsed_hours * decay_multiplier
+    simulated_hours = elapsed_seconds / 60.0
+    hours_lost = simulated_hours * decay_multiplier
     c_state["rsl"] = max(0.0, c_state["rsl"] - hours_lost)
 
 status = evaluate_status(
