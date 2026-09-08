@@ -534,6 +534,5 @@ with tab_fleet:
     else:
         st.info("No active fleet units recorded yet.")
 
-if c_state["is_running"]:
-    time.sleep(1.8)
-    st.rerun()
+time.sleep(1.8)
+st.rerun()
