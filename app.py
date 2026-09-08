@@ -215,6 +215,8 @@ if f"state_{container_id}" not in st.session_state:
         "cargo_temp": profile["base_temp"],
         "ambient_temp": profile["base_temp"] + 0.5,
         "prev_cargo_temp": profile["base_temp"],
+        "humidity": 35.0,
+        "last_decay_time": time.time(),
         "is_running": False
     }
 
@@ -246,6 +248,10 @@ prev_temp = c_state["cargo_temp"]
 if "last_good_telemetry" not in st.session_state:
     st.session_state["last_good_telemetry"] = None
 
+# Use the last valid humidity instead of forcing 0% during connection failures
+humidity = c_state.get("humidity", 35.0)
+cooling_failure = False
+
 try:
     response = requests.get(API_URL, timeout=5)
     response.raise_for_status()
@@ -263,7 +269,11 @@ try:
 
         c_state["cargo_temp"] = float(live_data["cargo_temp"])
         c_state["ambient_temp"] = float(live_data["ambient_temp"])
+
+        # Save the latest real humidity reading
         humidity = float(live_data["humidity"])
+        c_state["humidity"] = humidity
+
         cooling_failure = bool(
             live_data.get("compressor_failure", False)
         )
@@ -282,8 +292,9 @@ try:
             )
 
     else:
-        # API works, but ESP32 has stopped sending fresh readings
-        humidity = 0.0
+        # API works, but ESP32 has stopped sending fresh readings.
+        # Keep the last valid humidity instead of replacing it with 0%.
+        humidity = c_state.get("humidity", 35.0)
         cooling_failure = False
         c_state["is_running"] = False
 
@@ -303,26 +314,26 @@ except Exception:
         and time.time() - last_good <= 15
     ):
         c_state["is_running"] = True
-        humidity = 0.0
+        humidity = c_state.get("humidity", 35.0)
         cooling_failure = False
 
         st.sidebar.warning(
             "🟡 TELEMETRY CONNECTION UNSTABLE"
         )
         st.sidebar.caption(
-            "Temporary API interruption — retrying..."
+            "Temporary API interruption — using last valid sensor values."
         )
 
     else:
         c_state["is_running"] = False
-        humidity = 0.0
+        humidity = c_state.get("humidity", 35.0)
         cooling_failure = False
 
         st.sidebar.error(
             "🔴 ESP32 TELEMETRY OFFLINE"
         )
         st.sidebar.caption(
-            "Telemetry connection unavailable."
+            "Telemetry connection unavailable. Last valid sensor values retained."
         )
 # Optional baseline reset
 st.sidebar.write("")
@@ -331,6 +342,8 @@ if st.sidebar.button("🔄 Reset Thermodynamic Baseline", use_container_width=Tr
     c_state["cargo_temp"] = profile["base_temp"]
     c_state["prev_cargo_temp"] = profile["base_temp"]
     c_state["ambient_temp"] = profile["base_temp"] + 0.5
+    c_state["humidity"] = 35.0
+    c_state["last_decay_time"] = time.time()
     clear_db()
     st.rerun()
 
@@ -343,8 +356,18 @@ decay_multiplier = calculate_arrhenius_decay(
     profile["base_temp"],
     profile["ea_factor"]
 )
-hours_lost = 1.0 * decay_multiplier
-c_state["rsl"] = max(0.0, c_state["rsl"] - hours_lost)
+
+# Reduce shelf life according to REAL elapsed time.
+# Previously, 1 full hour was removed on every ~1.8 second Streamlit rerun.
+current_time = time.time()
+last_decay_time = c_state.get("last_decay_time", current_time)
+elapsed_hours = max(0.0, (current_time - last_decay_time) / 3600.0)
+c_state["last_decay_time"] = current_time
+
+# Only consume shelf life while fresh/recent telemetry is available.
+if c_state["is_running"]:
+    hours_lost = elapsed_hours * decay_multiplier
+    c_state["rsl"] = max(0.0, c_state["rsl"] - hours_lost)
 
 status = evaluate_status(
     c_state["rsl"], c_state["initial_rsl"],
