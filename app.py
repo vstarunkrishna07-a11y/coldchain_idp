@@ -366,10 +366,9 @@ last_decay_time = c_state.get("last_decay_time", current_time)
 elapsed_seconds = max(0.0, current_time - last_decay_time)
 c_state["last_decay_time"] = current_time
 
-if c_state["is_running"]:
-    simulated_hours = elapsed_seconds / 60.0
-    hours_lost = simulated_hours * decay_multiplier
-    c_state["rsl"] = max(0.0, c_state["rsl"] - hours_lost)
+simulated_hours = elapsed_seconds / 60.0
+hours_lost = simulated_hours * decay_multiplier
+c_state["rsl"] = max(0.0, c_state["rsl"] - hours_lost)
 
 status = evaluate_status(
     c_state["rsl"], c_state["initial_rsl"],
