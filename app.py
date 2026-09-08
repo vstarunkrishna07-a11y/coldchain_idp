@@ -1,4 +1,5 @@
 import streamlit as st
+import requests
 import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
@@ -13,6 +14,7 @@ from engine import (
 
 
 init_db()
+API_URL = "http://127.0.0.1:5000/telemetry"
 
 st.set_page_config(
     page_title="CryoTrace Enterprise | Telematics Gateway",
@@ -232,29 +234,43 @@ st.sidebar.markdown(f"""
 </div>
 """, unsafe_allow_html=True)
 
-# Sidebar - Telemetry Controls
+# Sidebar - Live ESP32 Telemetry
 st.sidebar.markdown("""
-<div class="sidebar-section-title">🕹️ Simulation & Fault Ingestion</div>
+<div class="sidebar-section-title">📡 Live ESP32 Telemetry</div>
 """, unsafe_allow_html=True)
 
-sim_mode = st.sidebar.radio("Ingestion Channel:", ["Continuous Telemetry Stream", "Manual Parametric Override"], label_visibility="collapsed")
+# Keep the previous sensor reading so Rate of Change can be calculated
+prev_temp = c_state["cargo_temp"]
 
-if sim_mode == "Continuous Telemetry Stream":
-    c_state["is_running"] = st.sidebar.checkbox("▶️ Enable Continuous Stream", value=True)
-    cooling_failure = st.sidebar.checkbox("⚠️ Inject Compressor Failure Event", value=False)
-    
+try:
+    response = requests.get(API_URL, timeout=2)
+    response.raise_for_status()
+    live_data = response.json()
+
+    c_state["cargo_temp"] = float(live_data["cargo_temp"])
+    c_state["ambient_temp"] = float(live_data["ambient_temp"])
+    humidity = float(live_data["humidity"])
+    cooling_failure = bool(live_data.get("compressor_failure", False))
+
+    c_state["is_running"] = True
+
+    st.sidebar.success("🟢 ESP32 TELEMETRY ONLINE")
+    st.sidebar.caption(
+        f"Shipment: {live_data.get('shipment_id', 'UNKNOWN')}"
+    )
+
     if cooling_failure:
-        target_ambient = profile["critical_temp"] + random.uniform(5.0, 12.0)
-    else:
-        target_ambient = profile["base_temp"] + random.uniform(-0.3, 0.6)
-        
-    c_state["ambient_temp"] += (target_ambient - c_state["ambient_temp"]) * 0.35
-    humidity = random.uniform(50.0, 58.0) if not cooling_failure else random.uniform(75.0, 85.0)
-else:
-    c_state["is_running"] = False
-    c_state["ambient_temp"] = st.sidebar.slider("Ambient Temperature (°C)", float(profile["base_temp"] - 10.0), 40.0, float(c_state["ambient_temp"]), 0.5)
-    humidity = st.sidebar.slider("Container Humidity (%)", 10.0, 95.0, 55.0, 1.0)
+        st.sidebar.error("⚠️ COMPRESSOR FAILURE SIGNAL ACTIVE")
 
+except Exception as e:
+    humidity = 0.0
+    cooling_failure = False
+    c_state["is_running"] = False
+
+    st.sidebar.error("🔴 ESP32 TELEMETRY OFFLINE")
+    st.sidebar.caption(str(e))
+
+# Optional baseline reset
 st.sidebar.write("")
 if st.sidebar.button("🔄 Reset Thermodynamic Baseline", use_container_width=True):
     c_state["rsl"] = profile["base_shelf_life_hrs"]
@@ -264,12 +280,15 @@ if st.sidebar.button("🔄 Reset Thermodynamic Baseline", use_container_width=Tr
     clear_db()
     st.rerun()
 
-# Dynamic Physics Calculations
-prev_temp = c_state["cargo_temp"]
-c_state["cargo_temp"] += (c_state["ambient_temp"] - c_state["cargo_temp"]) * profile["thermal_inertia"]
+# Live Sensor Calculations
 rate_of_change = abs(c_state["cargo_temp"] - prev_temp)
+c_state["prev_cargo_temp"] = c_state["cargo_temp"]
 
-decay_multiplier = calculate_arrhenius_decay(c_state["cargo_temp"], profile["base_temp"], profile["ea_factor"])
+decay_multiplier = calculate_arrhenius_decay(
+    c_state["cargo_temp"],
+    profile["base_temp"],
+    profile["ea_factor"]
+)
 hours_lost = 1.0 * decay_multiplier
 c_state["rsl"] = max(0.0, c_state["rsl"] - hours_lost)
 
@@ -278,6 +297,10 @@ status = evaluate_status(
     c_state["cargo_temp"], profile["max_safe_temp"],
     profile["critical_temp"], rate_of_change, profile["roc_limit"]
 )
+
+# A hardware compressor-failure signal must be reflected in the dashboard state
+if cooling_failure and "COMPROMISED" not in status:
+    status = "AT-RISK (Compressor Failure)"
 
 # Persist Telemetry
 log_telemetry_entry(
