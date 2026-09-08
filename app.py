@@ -191,7 +191,7 @@ st.markdown("""
         <p class="hero-subtitle">Arrhenius Reaction Kinetics & Multi-Cargo Thermodynamic Integrity Engine</p>
     </div>
     <div style="text-align: right;">
-        <span style="background: rgba(16, 185, 129, 0.2); border: 1px solid #10b981; color: #34d399; padding: 6px 12px; border-radius: 6px; font-size: 0.78rem; font-weight: 700; letter-spacing: 0.05em;">● TELEMETRY STREAM ONLINE</span>
+        <span style="background: rgba(16, 185, 129, 0.2); border: 1px solid #10b981; color: #34d399; padding: 6px 12px; border-radius: 6px; font-size: 0.78rem; font-weight: 700; letter-spacing: 0.05em;">● TELEMATICS GATEWAY ACTIVE</span>
     </div>
 </div>
 """, unsafe_allow_html=True)
@@ -208,19 +208,41 @@ selected_cargo = st.sidebar.selectbox("Perishable Commodity Profile", list(CARGO
 profile = CARGO_PROFILES[selected_cargo]
 
 # Session State Setup
-if f"state_{container_id}" not in st.session_state:
-    st.session_state[f"state_{container_id}"] = {
+state_key = f"state_{container_id}"
+
+if state_key not in st.session_state:
+    st.session_state[state_key] = {
+        "cargo_type": selected_cargo,
         "rsl": profile["base_shelf_life_hrs"],
         "initial_rsl": profile["base_shelf_life_hrs"],
         "cargo_temp": profile["base_temp"],
         "ambient_temp": profile["base_temp"] + 0.5,
         "prev_cargo_temp": profile["base_temp"],
         "humidity": 35.0,
+        "cooling_failure": False,
         "last_decay_time": time.time(),
+        "has_received_telemetry": False,
         "is_running": False
     }
 
-c_state = st.session_state[f"state_{container_id}"]
+c_state = st.session_state[state_key]
+
+# If the cargo profile is changed for this unit, reset its thermodynamic baseline
+# so values from the previous cargo profile do not carry over.
+if c_state.get("cargo_type") != selected_cargo:
+    c_state.update({
+        "cargo_type": selected_cargo,
+        "rsl": profile["base_shelf_life_hrs"],
+        "initial_rsl": profile["base_shelf_life_hrs"],
+        "cargo_temp": profile["base_temp"],
+        "ambient_temp": profile["base_temp"] + 0.5,
+        "prev_cargo_temp": profile["base_temp"],
+        "humidity": 35.0,
+        "cooling_failure": False,
+        "last_decay_time": time.time(),
+        "has_received_telemetry": False,
+        "is_running": False
+    })
 
 # Sidebar - Thermodynamic Threshold Reference Card
 st.sidebar.markdown(f"""
@@ -244,13 +266,18 @@ st.sidebar.markdown("""
 # Keep the previous sensor reading so Rate of Change can be calculated
 prev_temp = c_state["cargo_temp"]
 
-# Remember last successfully received telemetry inside this Streamlit session
-if "last_good_telemetry" not in st.session_state:
-    st.session_state["last_good_telemetry"] = None
+# Remember last successfully received telemetry for this shipment
+last_good_key = f"last_good_telemetry_{container_id}"
+if last_good_key not in st.session_state:
+    st.session_state[last_good_key] = None
 
-# Use the last valid humidity instead of forcing 0% during connection failures
+# Keep last valid values during temporary connection loss.
 humidity = c_state.get("humidity", 35.0)
-cooling_failure = False
+cooling_failure = c_state.get("cooling_failure", False)
+
+# ESP32 normally posts every 5 seconds. A 30-second freshness window avoids
+# false OFFLINE states while HTTP retries are happening.
+TELEMETRY_FRESHNESS_SECONDS = 30
 
 try:
     response = requests.get(API_URL, timeout=5)
@@ -258,32 +285,41 @@ try:
     live_data = response.json()
 
     last_updated = live_data.get("last_updated")
+    incoming_shipment = live_data.get("shipment_id")
 
-    # Check whether ESP32 data itself is fresh
     if last_updated is not None:
         telemetry_age = time.time() - float(last_updated)
     else:
         telemetry_age = float("inf")
 
-    if telemetry_age <= 15:
+    # Only apply telemetry to the shipment it actually belongs to.
+    if incoming_shipment != container_id:
+        c_state["is_running"] = False
 
+        st.sidebar.warning("🟡 WAITING FOR THIS UNIT")
+        st.sidebar.caption(
+            f"API is currently receiving {incoming_shipment or 'UNKNOWN'}, not {container_id}."
+        )
+
+    elif telemetry_age <= TELEMETRY_FRESHNESS_SECONDS:
         c_state["cargo_temp"] = float(live_data["cargo_temp"])
         c_state["ambient_temp"] = float(live_data["ambient_temp"])
 
-        # Save the latest real humidity reading
         humidity = float(live_data["humidity"])
         c_state["humidity"] = humidity
 
         cooling_failure = bool(
             live_data.get("compressor_failure", False)
         )
+        c_state["cooling_failure"] = cooling_failure
 
-        st.session_state["last_good_telemetry"] = time.time()
+        st.session_state[last_good_key] = time.time()
+        c_state["has_received_telemetry"] = True
         c_state["is_running"] = True
 
         st.sidebar.success("🟢 ESP32 TELEMETRY ONLINE")
         st.sidebar.caption(
-            f"Shipment: {live_data.get('shipment_id', 'UNKNOWN')}"
+            f"Shipment: {incoming_shipment}"
         )
 
         if cooling_failure:
@@ -292,30 +328,23 @@ try:
             )
 
     else:
-        # API works, but ESP32 has stopped sending fresh readings.
-        # Keep the last valid humidity instead of replacing it with 0%.
-        humidity = c_state.get("humidity", 35.0)
-        cooling_failure = False
+        # ESP32 data is stale. Keep the last valid sensor values.
         c_state["is_running"] = False
 
         st.sidebar.error("🔴 ESP32 TELEMETRY OFFLINE")
         st.sidebar.caption(
-            "No fresh telemetry received from ESP32."
+            "No fresh telemetry received. Last valid sensor values retained."
         )
 
 except Exception:
-
-    # A single temporary Cloudflare/API failure should NOT
-    # immediately declare the ESP32 offline.
-    last_good = st.session_state["last_good_telemetry"]
+    last_good = st.session_state[last_good_key]
 
     if (
         last_good is not None
-        and time.time() - last_good <= 15
+        and time.time() - last_good <= TELEMETRY_FRESHNESS_SECONDS
     ):
+        # Short API/tunnel interruption: keep last valid sensor values.
         c_state["is_running"] = True
-        humidity = c_state.get("humidity", 35.0)
-        cooling_failure = False
 
         st.sidebar.warning(
             "🟡 TELEMETRY CONNECTION UNSTABLE"
@@ -326,23 +355,25 @@ except Exception:
 
     else:
         c_state["is_running"] = False
-        humidity = c_state.get("humidity", 35.0)
-        cooling_failure = False
 
         st.sidebar.error(
             "🔴 ESP32 TELEMETRY OFFLINE"
         )
         st.sidebar.caption(
-            "Telemetry connection unavailable. Last valid sensor values retained."
+            "Telemetry unavailable. Last valid sensor values retained."
         )
+
 # Optional baseline reset
 st.sidebar.write("")
 if st.sidebar.button("🔄 Reset Thermodynamic Baseline", use_container_width=True):
+    c_state["cargo_type"] = selected_cargo
     c_state["rsl"] = profile["base_shelf_life_hrs"]
+    c_state["initial_rsl"] = profile["base_shelf_life_hrs"]
     c_state["cargo_temp"] = profile["base_temp"]
     c_state["prev_cargo_temp"] = profile["base_temp"]
     c_state["ambient_temp"] = profile["base_temp"] + 0.5
     c_state["humidity"] = 35.0
+    c_state["cooling_failure"] = False
     c_state["last_decay_time"] = time.time()
     clear_db()
     st.rerun()
@@ -359,16 +390,17 @@ decay_multiplier = calculate_arrhenius_decay(
 
 # Demo-time shelf-life progression.
 # 1 real minute = 1 simulated hour.
-# This keeps the RSL visibly moving during the presentation without
-# destroying the whole shelf life in a few seconds.
+# Once this unit has received real telemetry at least once, ageing continues
+# during a temporary outage using the last valid temperature.
 current_time = time.time()
 last_decay_time = c_state.get("last_decay_time", current_time)
 elapsed_seconds = max(0.0, current_time - last_decay_time)
 c_state["last_decay_time"] = current_time
 
-simulated_hours = elapsed_seconds / 60.0
-hours_lost = simulated_hours * decay_multiplier
-c_state["rsl"] = max(0.0, c_state["rsl"] - hours_lost)
+if c_state.get("has_received_telemetry", False):
+    simulated_hours = elapsed_seconds / 60.0
+    hours_lost = simulated_hours * decay_multiplier
+    c_state["rsl"] = max(0.0, c_state["rsl"] - hours_lost)
 
 status = evaluate_status(
     c_state["rsl"], c_state["initial_rsl"],
@@ -380,18 +412,21 @@ status = evaluate_status(
 if cooling_failure and "COMPROMISED" not in status:
     status = "AT-RISK (Compressor Failure)"
 
-# Persist Telemetry
-log_telemetry_entry(
-    container_id=container_id,
-    cargo_type=selected_cargo,
-    ambient_temp=round(c_state["ambient_temp"], 2),
-    cargo_temp=round(c_state["cargo_temp"], 2),
-    humidity=round(humidity, 2),
-    roc=round(rate_of_change, 3),
-    decay_rate=round(decay_multiplier, 2),
-    rsl=round(c_state["rsl"], 2),
-    status=status
-)
+# Persist telemetry only after this unit has received at least one real reading.
+# During a temporary outage, the last valid values continue to represent the
+# estimated shipment state.
+if c_state.get("has_received_telemetry", False):
+    log_telemetry_entry(
+        container_id=container_id,
+        cargo_type=selected_cargo,
+        ambient_temp=round(c_state["ambient_temp"], 2),
+        cargo_temp=round(c_state["cargo_temp"], 2),
+        humidity=round(humidity, 2),
+        roc=round(rate_of_change, 3),
+        decay_rate=round(decay_multiplier, 2),
+        rsl=round(c_state["rsl"], 2),
+        status=status
+    )
 
 with tab_live:
     # 5 Key Engineering Metric Cards
