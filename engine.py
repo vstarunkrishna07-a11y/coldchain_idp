@@ -3,45 +3,23 @@ import numpy as np
 import pandas as pd
 from datetime import datetime
 from fpdf import FPDF
+import hashlib
+from sklearn.linear_model import LinearRegression
 
 DB_NAME = "coldchain_telemetry.db"
 
 CARGO_PROFILES = {
     "mRNA Vaccines (Ultra-Cold)": {
-        "base_temp": -20.0,
-        "max_safe_temp": -15.0,
-        "critical_temp": -5.0,
-        "base_shelf_life_hrs": 72.0,
-        "ea_factor": 0.12,
-        "thermal_inertia": 0.08,
-        "roc_limit": 1.5
+        "base_temp": -20.0, "max_safe_temp": -15.0, "critical_temp": -5.0,
+        "base_shelf_life_hrs": 72.0, "ea_factor": 0.12, "roc_limit": 1.5
     },
     "Insulin / Biologics": {
-        "base_temp": 4.0,
-        "max_safe_temp": 8.0,
-        "critical_temp": 15.0,
-        "base_shelf_life_hrs": 720.0,
-        "ea_factor": 0.09,
-        "thermal_inertia": 0.12,
-        "roc_limit": 1.0
-    },
-    "Pasteurized Dairy": {
-        "base_temp": 4.0,
-        "max_safe_temp": 7.0,
-        "critical_temp": 12.0,
-        "base_shelf_life_hrs": 168.0,
-        "ea_factor": 0.15,
-        "thermal_inertia": 0.18,
-        "roc_limit": 1.2
+        "base_temp": 4.0, "max_safe_temp": 8.0, "critical_temp": 15.0,
+        "base_shelf_life_hrs": 720.0, "ea_factor": 0.09, "roc_limit": 1.0
     },
     "Fresh Seafood / Meat": {
-        "base_temp": 0.0,
-        "max_safe_temp": 4.0,
-        "critical_temp": 10.0,
-        "base_shelf_life_hrs": 48.0,
-        "ea_factor": 0.14,
-        "thermal_inertia": 0.20,
-        "roc_limit": 1.0
+        "base_temp": 0.0, "max_safe_temp": 4.0, "critical_temp": 10.0,
+        "base_shelf_life_hrs": 48.0, "ea_factor": 0.14, "roc_limit": 1.0
     }
 }
 
@@ -60,11 +38,28 @@ def init_db():
             rate_of_change REAL,
             decay_rate REAL,
             remaining_shelf_life_hrs REAL,
-            status TEXT
+            lat REAL,
+            lon REAL,
+            status TEXT,
+            prev_hash TEXT,
+            block_hash TEXT
         )
     """)
     conn.commit()
     conn.close()
+
+def generate_block_hash(prev_hash, timestamp, container_id, temp, rsl):
+    """Generates a SHA-256 hash for immutable auditing."""
+    payload = f"{prev_hash}{timestamp}{container_id}{temp:.2f}{rsl:.2f}".encode('utf-8')
+    return hashlib.sha256(payload).hexdigest()
+
+def get_last_hash(container_id):
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute("SELECT block_hash FROM telemetry WHERE container_id = ? ORDER BY id DESC LIMIT 1", (container_id,))
+    row = cursor.fetchone()
+    conn.close()
+    return row[0] if row else "0000000000000000000000000000000000000000000000000000000000000000"
 
 def calculate_arrhenius_decay(temp_celsius, base_temp, ea_factor):
     temp_diff = max(0.0, temp_celsius - base_temp)
@@ -72,26 +67,26 @@ def calculate_arrhenius_decay(temp_celsius, base_temp, ea_factor):
 
 def evaluate_status(remaining_rsl, initial_rsl, current_cargo_temp, max_safe_temp, critical_temp, roc, roc_limit):
     if remaining_rsl <= 0 or current_cargo_temp >= critical_temp:
-        return "COMPROMISED (Discard)"
+        return "COMPROMISED"
     elif remaining_rsl < (initial_rsl * 0.4) or current_cargo_temp > max_safe_temp or roc > roc_limit:
-        return "AT-RISK (Reroute Required)"
+        return "AT-RISK"
     else:
-        return "NOMINAL (Safe)"
+        return "NOMINAL"
 
-def log_telemetry_entry(container_id, cargo_type, ambient_temp, cargo_temp, humidity, roc, decay_rate, rsl, status):
+def log_telemetry_entry(container_id, cargo_type, ambient_temp, cargo_temp, humidity, roc, decay_rate, rsl, lat, lon, status):
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    prev_hash = get_last_hash(container_id)
+    block_hash = generate_block_hash(prev_hash, timestamp, container_id, cargo_temp, rsl)
+    
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
     cursor.execute("""
         INSERT INTO telemetry (
             timestamp, container_id, cargo_type, ambient_temp, 
             cargo_temp, humidity, rate_of_change, decay_rate, 
-            remaining_shelf_life_hrs, status
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    """, (
-        datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        container_id, cargo_type, ambient_temp, cargo_temp, 
-        humidity, roc, decay_rate, rsl, status
-    ))
+            remaining_shelf_life_hrs, lat, lon, status, prev_hash, block_hash
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    """, (timestamp, container_id, cargo_type, ambient_temp, cargo_temp, humidity, roc, decay_rate, rsl, lat, lon, status, prev_hash, block_hash))
     conn.commit()
     conn.close()
 
@@ -111,85 +106,25 @@ def clear_db():
     conn.commit()
     conn.close()
 
-def generate_pdf_report(df_container, container_id, cargo_type, profile):
-    pdf = FPDF()
-    pdf.add_page()
+def predict_time_to_breach(df_hist, critical_temp):
+    """Uses Linear Regression on recent telemetry to predict time until critical failure."""
+    if len(df_hist) < 5:
+        return None
     
-    # Title Header
-    pdf.set_font("Helvetica", "B", 18)
-    pdf.set_text_color(15, 23, 42)
-    pdf.cell(0, 12, "COLD-CHAIN COMPLIANCE & INTEGRITY AUDIT", ln=True, align="C")
-    pdf.set_font("Helvetica", "", 10)
-    pdf.set_text_color(100, 116, 139)
-    pdf.cell(0, 6, f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} | Standard: FDA 21 CFR Part 11 Compliant", ln=True, align="C")
-    pdf.ln(6)
+    # Take the last 10 points for a short-term trend
+    recent_data = df_hist.head(10).iloc[::-1].reset_index()
+    X = np.array(recent_data.index).reshape(-1, 1) # Time steps
+    y = np.array(recent_data['cargo_temp'])
     
-    # Shipment Profile Block
-    pdf.set_fill_color(241, 245, 249)
-    pdf.rect(10, 32, 190, 28, "F")
-    pdf.set_xy(14, 34)
-    pdf.set_font("Helvetica", "B", 11)
-    pdf.set_text_color(30, 41, 59)
-    pdf.cell(90, 6, f"Container ID: {container_id}", ln=0)
-    pdf.cell(90, 6, f"Cargo Type: {cargo_type}", ln=1)
-    pdf.set_x(14)
-    pdf.set_font("Helvetica", "", 10)
-    pdf.cell(90, 6, f"Base Optimal Temp: {profile['base_temp']} C", ln=0)
-    pdf.cell(90, 6, f"Safe Upper Threshold: {profile['max_safe_temp']} C", ln=1)
-    pdf.set_x(14)
-    pdf.cell(90, 6, f"Critical Limit: {profile['critical_temp']} C", ln=0)
-    pdf.cell(90, 6, f"Initial Usable Life: {profile['base_shelf_life_hrs']} hrs", ln=1)
-    pdf.ln(10)
+    model = LinearRegression()
+    model.fit(X, y)
     
-    # Summary Metrics
-    if not df_container.empty:
-        max_t = df_container['cargo_temp'].max()
-        min_t = df_container['cargo_temp'].min()
-        avg_t = df_container['cargo_temp'].mean()
-        latest_rsl = df_container['remaining_shelf_life_hrs'].iloc[0]
-        final_status = df_container['status'].iloc[0]
-        breaches = df_container[df_container['status'] != "NOMINAL (Safe)"].shape[0]
-        
-        pdf.set_font("Helvetica", "B", 12)
-        pdf.set_text_color(15, 23, 42)
-        pdf.cell(0, 8, "Thermal Ingress & Integrity Summary", ln=True)
-        pdf.set_font("Helvetica", "", 10)
-        
-        pdf.cell(95, 6, f"Max Core Temp Recorded: {max_t:.2f} C", border=1)
-        pdf.cell(95, 6, f"Min Core Temp Recorded: {min_t:.2f} C", border=1, ln=1)
-        pdf.cell(95, 6, f"Average Core Temp: {avg_t:.2f} C", border=1)
-        pdf.cell(95, 6, f"Total Breach Cycles: {breaches}", border=1, ln=1)
-        pdf.cell(95, 6, f"Final Remaining Shelf Life: {latest_rsl:.1f} hrs", border=1)
-        pdf.cell(95, 6, f"Final Dispatch Verdict: {final_status}", border=1, ln=1)
-        pdf.ln(8)
-        
-        # Telemetry Log Snapshot
-        pdf.set_font("Helvetica", "B", 11)
-        pdf.cell(0, 8, "Telemetry Log Snapshot (Recent Records)", ln=True)
-        pdf.set_font("Helvetica", "B", 9)
-        pdf.set_fill_color(226, 232, 240)
-        
-        pdf.cell(35, 7, "Timestamp", border=1, fill=True)
-        pdf.cell(25, 7, "Cargo (C)", border=1, fill=True)
-        pdf.cell(25, 7, "Ambient (C)", border=1, fill=True)
-        pdf.cell(25, 7, "RoC (C/cyc)", border=1, fill=True)
-        pdf.cell(25, 7, "Decay Rate", border=1, fill=True)
-        pdf.cell(25, 7, "RSL (hrs)", border=1, fill=True)
-        pdf.cell(30, 7, "Status", border=1, fill=True, ln=1)
-        
-        pdf.set_font("Helvetica", "", 8)
-        for _, row in df_container.head(10).iterrows():
-            pdf.cell(35, 6, str(row['timestamp'])[-8:], border=1)
-            pdf.cell(25, 6, f"{row['cargo_temp']:.2f}", border=1)
-            pdf.cell(25, 6, f"{row['ambient_temp']:.2f}", border=1)
-            pdf.cell(25, 6, f"{row['rate_of_change']:.2f}", border=1)
-            pdf.cell(25, 6, f"{row['decay_rate']:.2f}x", border=1)
-            pdf.cell(25, 6, f"{row['remaining_shelf_life_hrs']:.1f}", border=1)
-            pdf.cell(30, 6, str(row['status'])[:12], border=1, ln=1)
-            
-    pdf.ln(12)
-    pdf.set_font("Helvetica", "I", 9)
-    pdf.set_text_color(148, 163, 184)
-    pdf.cell(0, 6, "Digitally signed and cryptographically verified by Cold-Chain Edge Gateway.", ln=True, align="C")
+    trend = model.coef_[0]
+    if trend <= 0.05:  # Temperature is stable or cooling
+        return "> 60"
     
-    return bytes(pdf.output())
+    current_temp = y[-1]
+    steps_to_critical = (critical_temp - current_temp) / trend
+    minutes = steps_to_critical * (5/60) # Assuming 5 sec intervals
+    
+    return max(0, minutes)
