@@ -3,595 +3,151 @@ import requests
 import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
+import pydeck as pdk
 from datetime import datetime
 import time
-import random
 from engine import (
     init_db, CARGO_PROFILES, calculate_arrhenius_decay,
     evaluate_status, log_telemetry_entry, get_telemetry_history,
-    clear_db, generate_pdf_report
+    clear_db, predict_time_to_breach
 )
-
 
 init_db()
-API_URL = "https://attraction-promised-financing-refinance.trycloudflare.com/telemetry"
+API_URL = "http://localhost:5000/telemetry" # Update this to your Ngrok/Cloudflare URL for Wokwi
 
-st.set_page_config(
-    page_title="CryoTrace Enterprise | Telematics Gateway",
-    page_icon="🧊",
-    layout="wide",
-    initial_sidebar_state="expanded"
-)
+st.set_page_config(page_title="CryoTrace Enterprise", page_icon="🧊", layout="wide", initial_sidebar_state="expanded")
 
-# Enterprise Engineering Design System CSS
+# Enterprise CSS
 st.markdown("""
 <style>
     @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;600&display=swap');
-    
-    * {
-        font-family: 'Plus Jakarta Sans', sans-serif;
-    }
-    
-    code, .stCode {
-        font-family: 'JetBrains Mono', monospace;
-    }
-
-    .stApp {
-        background-color: #f8fafc;
-    }
-    
-    /* Top Corporate Header */
-    .hero-header {
-        background: linear-gradient(135deg, #091e42 0%, #0c2b5f 50%, #173b7a 100%);
-        border-radius: 14px;
-        padding: 22px 28px;
-        color: #ffffff;
-        margin-bottom: 22px;
-        box-shadow: 0 10px 20px -5px rgba(9, 30, 66, 0.25);
-        display: flex;
-        justify-content: space-between;
-        align-items: center;
-        border: 1px solid rgba(255, 255, 255, 0.1);
-    }
-    .hero-title {
-        font-size: 1.65rem;
-        font-weight: 800;
-        margin: 0;
-        letter-spacing: -0.02em;
-        display: flex;
-        align-items: center;
-        gap: 10px;
-    }
-    .hero-badge {
-        font-size: 0.72rem;
-        font-weight: 700;
-        background: #2563eb;
-        color: #ffffff;
-        padding: 3px 10px;
-        border-radius: 6px;
-        letter-spacing: 0.05em;
-    }
-    .hero-subtitle {
-        font-size: 0.9rem;
-        color: #93c5fd;
-        margin: 4px 0 0 0;
-    }
-    
-    /* Sidebar Section Cards */
-    .sidebar-card {
-        background: #ffffff;
-        border: 1px solid #e2e8f0;
-        border-radius: 10px;
-        padding: 14px;
-        margin-bottom: 14px;
-        box-shadow: 0 1px 3px rgba(0,0,0,0.05);
-    }
-    .sidebar-section-title {
-        font-size: 0.75rem;
-        font-weight: 700;
-        text-transform: uppercase;
-        letter-spacing: 0.08em;
-        color: #64748b;
-        margin-bottom: 8px;
-        display: flex;
-        align-items: center;
-        gap: 6px;
-    }
-    
-    /* KPI Metric Cards */
-    .kpi-card {
-        background: #ffffff;
-        border-radius: 12px;
-        padding: 16px 18px;
-        box-shadow: 0 2px 8px rgba(0, 0, 0, 0.04);
-        border: 1px solid #e2e8f0;
-        border-top-width: 4px;
-        transition: transform 0.2s ease;
-    }
-    .kpi-card:hover {
-        transform: translateY(-2px);
-    }
-    .kpi-header {
-        display: flex;
-        justify-content: space-between;
-        align-items: center;
-        margin-bottom: 6px;
-    }
-    .kpi-title {
-        font-size: 0.75rem;
-        font-weight: 700;
-        text-transform: uppercase;
-        letter-spacing: 0.06em;
-        color: #64748b;
-    }
-    .kpi-value {
-        font-size: 1.7rem;
-        font-weight: 800;
-        color: #0f172a;
-        letter-spacing: -0.02em;
-        font-family: 'Plus Jakarta Sans', sans-serif;
-    }
-    .kpi-subtext {
-        font-size: 0.78rem;
-        font-weight: 600;
-        margin-top: 4px;
-    }
-
-    /* Status Banners */
-    .status-banner {
-        border-radius: 10px;
-        padding: 14px 20px;
-        margin: 18px 0;
-        font-weight: 600;
-        display: flex;
-        align-items: center;
-        gap: 12px;
-        font-size: 0.92rem;
-    }
-    .status-nominal {
-        background: #ecfdf5;
-        border: 1px solid #a7f3d0;
-        border-left: 5px solid #10b981;
-        color: #065f46;
-    }
-    .status-warning {
-        background: #fffbeb;
-        border: 1px solid #fde68a;
-        border-left: 5px solid #f59e0b;
-        color: #92400e;
-    }
-    .status-danger {
-        background: #fef2f2;
-        border: 1px solid #fecaca;
-        border-left: 5px solid #ef4444;
-        color: #991b1b;
-    }
-
-    /* Fleet Cards */
-    .fleet-card {
-        background: #ffffff;
-        border-radius: 12px;
-        padding: 18px;
-        margin-bottom: 14px;
-        border: 1px solid #e2e8f0;
-        border-top: 4px solid #2563eb;
-        box-shadow: 0 2px 6px rgba(0, 0, 0, 0.03);
-    }
+    * { font-family: 'Plus Jakarta Sans', sans-serif; }
+    code { font-family: 'JetBrains Mono', monospace; font-size: 0.8rem; background: #f1f5f9; padding: 2px 6px; border-radius: 4px; }
+    .hero-header { background: linear-gradient(135deg, #020617 0%, #0f172a 100%); padding: 22px 28px; color: white; border-radius: 12px; display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1); }
+    .kpi-card { background: white; padding: 16px; border-radius: 10px; border: 1px solid #e2e8f0; border-top: 4px solid #3b82f6; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
+    .kpi-title { font-size: 0.75rem; font-weight: 700; color: #64748b; text-transform: uppercase; letter-spacing: 0.05em; }
+    .kpi-val { font-size: 1.8rem; font-weight: 800; color: #0f172a; margin-top: 5px; }
+    .hash-box { background: #f8fafc; border: 1px dashed #cbd5e1; padding: 10px; border-radius: 6px; font-size: 0.75rem; word-break: break-all; margin-bottom: 10px;}
 </style>
 """, unsafe_allow_html=True)
 
-# Main Title Header
 st.markdown("""
 <div class="hero-header">
     <div>
-        <h1 class="hero-title">
-            🧊 CryoTrace Enterprise
-            <span class="hero-badge">TELEMATICS GATEWAY</span>
-        </h1>
-        <p class="hero-subtitle">Arrhenius Reaction Kinetics & Multi-Cargo Thermodynamic Integrity Engine</p>
+        <h1 style="margin:0; font-size:1.8rem; font-weight:800;">🧊 CryoTrace Enterprise</h1>
+        <p style="margin:4px 0 0 0; color:#94a3b8; font-size:0.9rem;">Cyber-Physical Telematics & Cryptographic Supply Chain Ledger</p>
     </div>
-    <div style="text-align: right;">
-        <span style="background: rgba(16, 185, 129, 0.2); border: 1px solid #10b981; color: #34d399; padding: 6px 12px; border-radius: 6px; font-size: 0.78rem; font-weight: 700; letter-spacing: 0.05em;">● TELEMATICS GATEWAY ACTIVE</span>
+    <div>
+        <span style="background: rgba(16, 185, 129, 0.2); border: 1px solid #10b981; color: #10b981; padding: 6px 12px; border-radius: 6px; font-weight: 700; font-size: 0.8rem;">● SECURE GATEWAY ACTIVE</span>
     </div>
 </div>
 """, unsafe_allow_html=True)
 
-tab_live, tab_fleet = st.tabs(["🚚 Real-Time Shipment Telematics", "🌐 Multi-Unit Fleet Operations"])
+tab_live, tab_map, tab_audit = st.tabs(["🚚 Real-Time Telematics", "🌍 Geospatial Tracking", "🔐 Cryptographic Ledger"])
 
-# Sidebar - Structured Configuration Panels
-st.sidebar.markdown("""
-<div class="sidebar-section-title">📦 Shipment Identifier & Cargo</div>
-""", unsafe_allow_html=True)
-
-container_id = st.sidebar.selectbox("Active Transit Unit", ["UNIT-ALPHA-101", "UNIT-BETA-204", "UNIT-GAMMA-309"], label_visibility="collapsed")
-selected_cargo = st.sidebar.selectbox("Perishable Commodity Profile", list(CARGO_PROFILES.keys()))
+# Sidebar Logic
+container_id = st.sidebar.selectbox("Active Transit Unit", ["UNIT-ALPHA-101", "UNIT-BETA-204"])
+selected_cargo = st.sidebar.selectbox("Commodity Profile", list(CARGO_PROFILES.keys()))
 profile = CARGO_PROFILES[selected_cargo]
 
-# Session State Setup
 state_key = f"state_{container_id}"
-
 if state_key not in st.session_state:
     st.session_state[state_key] = {
-        "cargo_type": selected_cargo,
-        "rsl": profile["base_shelf_life_hrs"],
-        "initial_rsl": profile["base_shelf_life_hrs"],
-        "cargo_temp": profile["base_temp"],
-        "ambient_temp": profile["base_temp"] + 0.5,
-        "prev_cargo_temp": profile["base_temp"],
-        "humidity": 35.0,
-        "cooling_failure": False,
-        "last_decay_time": time.time(),
-        "has_received_telemetry": False,
-        "is_running": False
+        "cargo_type": selected_cargo, "rsl": profile["base_shelf_life_hrs"], "initial_rsl": profile["base_shelf_life_hrs"],
+        "cargo_temp": profile["base_temp"], "prev_cargo_temp": profile["base_temp"], "ambient_temp": profile["base_temp"] + 0.5,
+        "lat": 12.9692, "lon": 79.1559, "humidity": 40.0, "has_telemetry": False, "last_time": time.time()
     }
 
 c_state = st.session_state[state_key]
-
-# If the cargo profile is changed for this unit, reset its thermodynamic baseline
-# so values from the previous cargo profile do not carry over.
-if c_state.get("cargo_type") != selected_cargo:
-    c_state.update({
-        "cargo_type": selected_cargo,
-        "rsl": profile["base_shelf_life_hrs"],
-        "initial_rsl": profile["base_shelf_life_hrs"],
-        "cargo_temp": profile["base_temp"],
-        "ambient_temp": profile["base_temp"] + 0.5,
-        "prev_cargo_temp": profile["base_temp"],
-        "humidity": 35.0,
-        "cooling_failure": False,
-        "last_decay_time": time.time(),
-        "has_received_telemetry": False,
-        "is_running": False
-    })
-
-# Sidebar - Thermodynamic Threshold Reference Card
-st.sidebar.markdown(f"""
-<div class="sidebar-card">
-    <div class="sidebar-section-title">📋 Kinetic Specification Baseline</div>
-    <div style="font-size: 0.8rem; color: #475569; display: grid; gap: 4px;">
-        <div>• <b>Baseline Storage:</b> <code>{profile['base_temp']} °C</code></div>
-        <div>• <b>Safe Threshold:</b> <code>{profile['max_safe_temp']} °C</code></div>
-        <div>• <b>Critical Ingress Limit:</b> <code>{profile['critical_temp']} °C</code></div>
-        <div>• <b>Initial Shelf Life:</b> <code>{profile['base_shelf_life_hrs']} hrs</code></div>
-        <div>• <b>RoC Rate Limit:</b> <code>{profile['roc_limit']} °C/cyc</code></div>
-    </div>
-</div>
-""", unsafe_allow_html=True)
-
-# Sidebar - Live ESP32 Telemetry
-st.sidebar.markdown("""
-<div class="sidebar-section-title">📡 Live ESP32 Telemetry</div>
-""", unsafe_allow_html=True)
-
-# Keep the previous sensor reading so Rate of Change can be calculated
 prev_temp = c_state["cargo_temp"]
 
-# Remember last successfully received telemetry for this shipment
-last_good_key = f"last_good_telemetry_{container_id}"
-if last_good_key not in st.session_state:
-    st.session_state[last_good_key] = None
-
-# Keep last valid values during temporary connection loss.
-humidity = c_state.get("humidity", 35.0)
-cooling_failure = c_state.get("cooling_failure", False)
-
-# ESP32 normally posts every 5 seconds. A 30-second freshness window avoids
-# false OFFLINE states while HTTP retries are happening.
-TELEMETRY_FRESHNESS_SECONDS = 30
-
+# Fetch Telemetry
 try:
-    response = requests.get(API_URL, timeout=5)
-    response.raise_for_status()
-    live_data = response.json()
-
-    last_updated = live_data.get("last_updated")
-    incoming_shipment = live_data.get("shipment_id")
-
-    if last_updated is not None:
-        telemetry_age = time.time() - float(last_updated)
-    else:
-        telemetry_age = float("inf")
-
-    # Only apply telemetry to the shipment it actually belongs to.
-    if incoming_shipment != container_id:
-        c_state["is_running"] = False
-
-        st.sidebar.warning("🟡 WAITING FOR THIS UNIT")
-        st.sidebar.caption(
-            f"API is currently receiving {incoming_shipment or 'UNKNOWN'}, not {container_id}."
-        )
-
-    elif telemetry_age <= TELEMETRY_FRESHNESS_SECONDS:
+    res = requests.get(API_URL, timeout=3)
+    res.raise_for_status()
+    live_data = res.json()
+    
+    if time.time() - float(live_data.get("last_updated", 0)) < 30:
         c_state["cargo_temp"] = float(live_data["cargo_temp"])
         c_state["ambient_temp"] = float(live_data["ambient_temp"])
-
-        humidity = float(live_data["humidity"])
-        c_state["humidity"] = humidity
-
-        cooling_failure = bool(
-            live_data.get("compressor_failure", False)
-        )
-        c_state["cooling_failure"] = cooling_failure
-
-        st.session_state[last_good_key] = time.time()
-        c_state["has_received_telemetry"] = True
-        c_state["is_running"] = True
-
-        st.sidebar.success("🟢 ESP32 TELEMETRY ONLINE")
-        st.sidebar.caption(
-            f"Shipment: {incoming_shipment}"
-        )
-
-        if cooling_failure:
-            st.sidebar.error(
-                "⚠️ COMPRESSOR FAILURE SIGNAL ACTIVE"
-            )
-
+        c_state["lat"] = float(live_data["lat"])
+        c_state["lon"] = float(live_data["lon"])
+        c_state["has_telemetry"] = True
+        st.sidebar.success("🟢 EDGE SENSOR ONLINE")
     else:
-        # ESP32 data is stale. Keep the last valid sensor values.
-        c_state["is_running"] = False
-
-        st.sidebar.error("🔴 ESP32 TELEMETRY OFFLINE")
-        st.sidebar.caption(
-            "No fresh telemetry received. Last valid sensor values retained."
-        )
-
+        st.sidebar.error("🔴 SENSOR OFFLINE (Using Cached Data)")
 except Exception:
-    last_good = st.session_state[last_good_key]
+    st.sidebar.error("🔴 API DISCONNECTED")
 
-    if (
-        last_good is not None
-        and time.time() - last_good <= TELEMETRY_FRESHNESS_SECONDS
-    ):
-        # Short API/tunnel interruption: keep last valid sensor values.
-        c_state["is_running"] = True
-
-        st.sidebar.warning(
-            "🟡 TELEMETRY CONNECTION UNSTABLE"
-        )
-        st.sidebar.caption(
-            "Temporary API interruption — using last valid sensor values."
-        )
-
-    else:
-        c_state["is_running"] = False
-
-        st.sidebar.error(
-            "🔴 ESP32 TELEMETRY OFFLINE"
-        )
-        st.sidebar.caption(
-            "Telemetry unavailable. Last valid sensor values retained."
-        )
-
-# Optional baseline reset
-st.sidebar.write("")
-if st.sidebar.button("🔄 Reset Thermodynamic Baseline", use_container_width=True):
-    c_state["cargo_type"] = selected_cargo
-    c_state["rsl"] = profile["base_shelf_life_hrs"]
-    c_state["initial_rsl"] = profile["base_shelf_life_hrs"]
-    c_state["cargo_temp"] = profile["base_temp"]
-    c_state["prev_cargo_temp"] = profile["base_temp"]
-    c_state["ambient_temp"] = profile["base_temp"] + 0.5
-    c_state["humidity"] = 35.0
-    c_state["cooling_failure"] = False
-    c_state["last_decay_time"] = time.time()
+if st.sidebar.button("🔄 Reset Environment", use_container_width=True):
     clear_db()
+    st.session_state.clear()
     st.rerun()
 
-# Live Sensor Calculations
+# Calculations
 rate_of_change = abs(c_state["cargo_temp"] - prev_temp)
 c_state["prev_cargo_temp"] = c_state["cargo_temp"]
+decay = calculate_arrhenius_decay(c_state["cargo_temp"], profile["base_temp"], profile["ea_factor"])
 
-decay_multiplier = calculate_arrhenius_decay(
-    c_state["cargo_temp"],
-    profile["base_temp"],
-    profile["ea_factor"]
-)
+if c_state["has_telemetry"]:
+    elapsed = (time.time() - c_state["last_time"]) / 60.0
+    c_state["rsl"] = max(0.0, c_state["rsl"] - (elapsed * decay))
+c_state["last_time"] = time.time()
 
-# Demo-time shelf-life progression.
-# 1 real minute = 1 simulated hour.
-# Once this unit has received real telemetry at least once, ageing continues
-# during a temporary outage using the last valid temperature.
-current_time = time.time()
-last_decay_time = c_state.get("last_decay_time", current_time)
-elapsed_seconds = max(0.0, current_time - last_decay_time)
-c_state["last_decay_time"] = current_time
+status = evaluate_status(c_state["rsl"], c_state["initial_rsl"], c_state["cargo_temp"], profile["max_safe_temp"], profile["critical_temp"], rate_of_change, profile["roc_limit"])
 
-if c_state.get("has_received_telemetry", False):
-    simulated_hours = elapsed_seconds / 60.0
-    hours_lost = simulated_hours * decay_multiplier
-    c_state["rsl"] = max(0.0, c_state["rsl"] - hours_lost)
+if c_state["has_telemetry"]:
+    log_telemetry_entry(container_id, selected_cargo, c_state["ambient_temp"], c_state["cargo_temp"], c_state["humidity"], rate_of_change, decay, c_state["rsl"], c_state["lat"], c_state["lon"], status)
 
-status = evaluate_status(
-    c_state["rsl"], c_state["initial_rsl"],
-    c_state["cargo_temp"], profile["max_safe_temp"],
-    profile["critical_temp"], rate_of_change, profile["roc_limit"]
-)
-
-# A hardware compressor-failure signal must be reflected in the dashboard state
-if cooling_failure and "COMPROMISED" not in status:
-    status = "AT-RISK (Compressor Failure)"
-
-# Persist telemetry only after this unit has received at least one real reading.
-# During a temporary outage, the last valid values continue to represent the
-# estimated shipment state.
-if c_state.get("has_received_telemetry", False):
-    log_telemetry_entry(
-        container_id=container_id,
-        cargo_type=selected_cargo,
-        ambient_temp=round(c_state["ambient_temp"], 2),
-        cargo_temp=round(c_state["cargo_temp"], 2),
-        humidity=round(humidity, 2),
-        roc=round(rate_of_change, 3),
-        decay_rate=round(decay_multiplier, 2),
-        rsl=round(c_state["rsl"], 2),
-        status=status
-    )
+df_hist = get_telemetry_history(container_id)
 
 with tab_live:
-    # 5 Key Engineering Metric Cards
-    m1, m2, m3, m4, m5 = st.columns(5)
-    
-    with m1:
-        st.markdown(f"""
-        <div class="kpi-card" style="border-top-color: #2563eb;">
-            <div class="kpi-header"><span class="kpi-title">Cargo Core Temp</span><span>🌡️</span></div>
-            <div class="kpi-value">{c_state["cargo_temp"]:.2f}<span style="font-size:1rem; font-weight:500;"> °C</span></div>
-            <div class="kpi-subtext" style="color: #2563eb;">Baseline: {profile['base_temp']}°C</div>
-        </div>
-        """, unsafe_allow_html=True)
-        
-    with m2:
-        st.markdown(f"""
-        <div class="kpi-card" style="border-top-color: #f59e0b;">
-            <div class="kpi-header"><span class="kpi-title">Ambient Sensor</span><span>🌤️</span></div>
-            <div class="kpi-value">{c_state["ambient_temp"]:.2f}<span style="font-size:1rem; font-weight:500;"> °C</span></div>
-            <div class="kpi-subtext" style="color: #d97706;">Humidity: {humidity:.0f}%</div>
-        </div>
-        """, unsafe_allow_html=True)
-        
-    with m3:
-        st.markdown(f"""
-        <div class="kpi-card" style="border-top-color: #ec4899;">
-            <div class="kpi-header"><span class="kpi-title">Rate of Change (ΔT)</span><span>⚡</span></div>
-            <div class="kpi-value">{rate_of_change:.2f}<span style="font-size:0.9rem; font-weight:500;"> °C/cyc</span></div>
-            <div class="kpi-subtext" style="color: #db2777;">Limit: {profile['roc_limit']}°C</div>
-        </div>
-        """, unsafe_allow_html=True)
-        
-    with m4:
-        decay_color = "#10b981" if decay_multiplier < 1.3 else ("#f59e0b" if decay_multiplier < 3.0 else "#ef4444")
-        st.markdown(f"""
-        <div class="kpi-card" style="border-top-color: #8b5cf6;">
-            <div class="kpi-header"><span class="kpi-title">Arrhenius Decay</span><span>📈</span></div>
-            <div class="kpi-value" style="color:{decay_color};">{decay_multiplier:.2f}x</div>
-            <div class="kpi-subtext" style="color: #7c3aed;">Kinetic Multiplier</div>
-        </div>
-        """, unsafe_allow_html=True)
-        
-    with m5:
-        rsl_pct = (c_state["rsl"] / c_state["initial_rsl"]) * 100
-        rsl_bar_color = "#10b981" if rsl_pct > 50 else ("#f59e0b" if rsl_pct > 20 else "#ef4444")
-        st.markdown(f"""
-        <div class="kpi-card" style="border-top-color: {rsl_bar_color};">
-            <div class="kpi-header"><span class="kpi-title">Remaining Life</span><span>⏳</span></div>
-            <div class="kpi-value">{c_state["rsl"]:.1f}<span style="font-size:0.95rem; font-weight:500;"> hrs</span></div>
-            <div class="kpi-subtext" style="color: {rsl_bar_color};">{rsl_pct:.0f}% margin usable</div>
-        </div>
-        """, unsafe_allow_html=True)
+    m1, m2, m3, m4 = st.columns(4)
+    m1.markdown(f'<div class="kpi-card"><div class="kpi-title">Core Temp 🌡️</div><div class="kpi-val">{c_state["cargo_temp"]:.2f}°C</div></div>', unsafe_allow_html=True)
+    m2.markdown(f'<div class="kpi-card" style="border-color:#f59e0b;"><div class="kpi-title">Ambient 🌤️</div><div class="kpi-val">{c_state["ambient_temp"]:.2f}°C</div></div>', unsafe_allow_html=True)
+    m3.markdown(f'<div class="kpi-card" style="border-color:#8b5cf6;"><div class="kpi-title">Kinetic Decay 📈</div><div class="kpi-val">{decay:.2f}x</div></div>', unsafe_allow_html=True)
+    m4.markdown(f'<div class="kpi-card" style="border-color:#10b981;"><div class="kpi-title">Usable Life ⏳</div><div class="kpi-val">{c_state["rsl"]:.1f}h</div></div>', unsafe_allow_html=True)
 
-    # Dynamic Triage Banner
-    if "NOMINAL" in status:
-        st.markdown(f"""<div class="status-banner status-nominal"><span>✅</span> <div><b>SYSTEM STATUS: {status}</b><br><span style="font-weight:400; font-size:0.86rem;">Thermal equilibrium within nominal range. Arrhenius reaction rates are within validated safety parameters.</span></div></div>""", unsafe_allow_html=True)
-    elif "AT-RISK" in status:
-        st.markdown(f"""<div class="status-banner status-warning"><span>⚠️</span> <div><b>SYSTEM STATUS: {status}</b><br><span style="font-weight:400; font-size:0.86rem;">Thermal excursion detected. Kinetic decay is accelerated. Automated action: Initiate logistics reroute protocol.</span></div></div>""", unsafe_allow_html=True)
-    else:
-        st.markdown(f"""<div class="status-banner status-danger"><span>🛑</span> <div><b>SYSTEM STATUS: {status}</b><br><span style="font-weight:400; font-size:0.86rem;">Critical temperature threshold breached. Cumulative thermal damage exceeds regulatory specifications. Cargo flagged unusable.</span></div></div>""", unsafe_allow_html=True)
-
-    df_hist = get_telemetry_history(container_id)
     if not df_hist.empty:
-        df_hist_chrono = df_hist.iloc[::-1]
+        # ML Predictive Alert
+        ttb = predict_time_to_breach(df_hist, profile['critical_temp'])
+        if ttb and ttb != "> 60":
+            st.error(f"🧠 **AI PREDICTIVE ALERT:** Based on current thermal trajectory, critical failure is imminent in **~{ttb:.1f} minutes**. Recommend immediate logistical reroute.")
 
-        col_left, col_right = st.columns(2)
-        
-        with col_left:
-            fig_t = go.Figure()
-            fig_t.add_trace(go.Scatter(
-                x=df_hist_chrono['id'], y=df_hist_chrono['cargo_temp'], 
-                mode='lines+markers', name='Core Temp', 
-                line=dict(color='#2563eb', width=2.5),
-                marker=dict(size=5, color='#1d4ed8')
-            ))
-            fig_t.add_trace(go.Scatter(
-                x=df_hist_chrono['id'], y=df_hist_chrono['ambient_temp'], 
-                mode='lines', name='Ambient Sensor', 
-                line=dict(dash='dash', color='#94a3b8', width=1.5)
-            ))
-            fig_t.add_hline(y=profile['max_safe_temp'], line_dash="dot", line_color="#f59e0b", annotation_text=f"Safe Upper ({profile['max_safe_temp']}°C)", annotation_font_color="#f59e0b")
-            fig_t.add_hline(y=profile['critical_temp'], line_dash="solid", line_color="#ef4444", annotation_text=f"Critical Limit ({profile['critical_temp']}°C)", annotation_font_color="#ef4444")
-            fig_t.update_layout(
-                title=dict(text="<b>Thermal Dynamics & Ingress vs Validated Limits</b>", font=dict(size=13, color="#0f172a")),
-                height=310, template="plotly_white",
-                margin=dict(l=15, r=15, t=35, b=15),
-                paper_bgcolor='rgba(255,255,255,1)',
-                plot_bgcolor='rgba(248,250,252,0.6)',
-                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
-            )
-            st.plotly_chart(fig_t, use_container_width=True)
+        # Plotly Chart
+        df_plot = df_hist.iloc[::-1]
+        fig = go.Figure()
+        fig.add_trace(go.Scatter(x=df_plot['id'], y=df_plot['cargo_temp'], mode='lines', name='Core Temp', line=dict(color='#3b82f6', width=3)))
+        fig.add_hline(y=profile['critical_temp'], line_dash="dash", line_color="red", annotation_text="CRITICAL LIMIT")
+        fig.update_layout(height=350, margin=dict(l=0, r=0, t=30, b=0), template="plotly_white")
+        st.plotly_chart(fig, use_container_width=True)
 
-        with col_right:
-            fig_rsl = go.Figure()
-            fig_rsl.add_trace(go.Scatter(
-                x=df_hist_chrono['id'], y=df_hist_chrono['remaining_shelf_life_hrs'], 
-                mode='lines+markers', name='RSL Trajectory', 
-                line=dict(color='#059669', width=2.5),
-                fill='tozeroy', fillcolor='rgba(16, 185, 129, 0.08)',
-                marker=dict(size=5, color='#047857')
-            ))
-            fig_rsl.update_layout(
-                title=dict(text="<b>Dynamic Shelf-Life Degradation Trajectory (RSL)</b>", font=dict(size=13, color="#0f172a")),
-                height=310, template="plotly_white",
-                margin=dict(l=15, r=15, t=35, b=15),
-                paper_bgcolor='rgba(255,255,255,1)',
-                plot_bgcolor='rgba(248,250,252,0.6)'
-            )
-            st.plotly_chart(fig_rsl, use_container_width=True)
-
-        # PDF & Table Audit Section
-        st.markdown("### 📋 Regulatory Compliance & Cryptographic Audit Trail")
-        pdf_bytes = generate_pdf_report(df_hist, container_id, selected_cargo, profile)
-        
-        c_btn, _ = st.columns([1.5, 3])
-        with c_btn:
-            current_time_str = datetime.now().strftime('%Y%m%d_%H%M%S')
-            st.download_button(
-                label="📄 Export Compliance Audit Certificate (PDF)",
-                data=pdf_bytes,
-                file_name=f"cryotrace_audit_{container_id}_{current_time_str}.pdf",
-                mime="application/pdf",
-                use_container_width=True
-            )
-
-        st.dataframe(
-            df_hist[['timestamp', 'container_id', 'cargo_type', 'cargo_temp', 'ambient_temp', 'rate_of_change', 'decay_rate', 'remaining_shelf_life_hrs', 'status']].head(12),
-            use_container_width=True
+with tab_map:
+    st.markdown("### 🛰️ Live Geospatial Telemetry")
+    if c_state["has_telemetry"]:
+        # PyDeck 3D Map configured near VIT
+        map_data = pd.DataFrame({'lat': [c_state["lat"]], 'lon': [c_state["lon"]]})
+        view_state = pdk.ViewState(latitude=c_state["lat"], longitude=c_state["lon"], zoom=14, pitch=50)
+        layer = pdk.Layer(
+            'ScatterplotLayer', data=map_data, get_position='[lon, lat]',
+            get_color='[220, 38, 38, 200]', get_radius=100, pickable=True
         )
+        st.pydeck_chart(pdk.Deck(layers=[layer], initial_view_state=view_state, map_style="mapbox://styles/mapbox/light-v9"))
+        st.caption(f"Current Coordinates: {c_state['lat']}, {c_state['lon']}")
 
-with tab_fleet:
-    st.markdown("### 🌐 Active Fleet Units Telematics Summary")
-    df_all = get_telemetry_history()
-    if not df_all.empty:
-        latest_fleet = df_all.groupby('container_id').first().reset_index()
-        
-        f1, f2, f3 = st.columns(3)
-        for idx, row in latest_fleet.iterrows():
-            col = [f1, f2, f3][idx % 3]
-            with col:
-                box_color = "#10b981" if "NOMINAL" in row['status'] else ("#f59e0b" if "AT-RISK" in row['status'] else "#ef4444")
-                st.markdown(f"""
-                <div class="fleet-card" style="border-top-color: {box_color};">
-                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
-                        <h3 style="margin:0; font-size:1.1rem; color:#0f172a;">🚛 {row['container_id']}</h3>
-                        <span style="background:{box_color}18; color:{box_color}; font-size:0.75rem; font-weight:700; padding:3px 8px; border-radius:6px;">{row['status'][:8]}</span>
-                    </div>
-                    <p style="margin: 4px 0; font-size: 0.85rem; color: #64748b;">Commodity: <b style="color:#0f172a;">{row['cargo_type']}</b></p>
-                    <div style="display: flex; justify-content: space-between; margin-top: 10px; background: #f8fafc; padding: 8px 12px; border-radius: 6px; border: 1px solid #f1f5f9;">
-                        <div>
-                            <div style="font-size:0.7rem; color:#64748b; font-weight:600;">CORE TEMP</div>
-                            <div style="font-size:1.05rem; font-weight:700; color:#0f172a;">{row['cargo_temp']:.2f} °C</div>
-                        </div>
-                        <div>
-                            <div style="font-size:0.7rem; color:#64748b; font-weight:600;">USABLE MARGIN</div>
-                            <div style="font-size:1.05rem; font-weight:700; color:#0f172a;">{row['remaining_shelf_life_hrs']:.1f} hrs</div>
-                        </div>
-                    </div>
-                </div>
-                """, unsafe_allow_html=True)
-                
-        st.markdown("---")
-        st.dataframe(df_all[['timestamp', 'container_id', 'cargo_type', 'cargo_temp', 'ambient_temp', 'remaining_shelf_life_hrs', 'status']], use_container_width=True)
-    else:
-        st.info("No active fleet units recorded yet.")
+with tab_audit:
+    st.markdown("### 🔐 Cryptographic Immutable Ledger")
+    st.info("Every telemetry entry is hashed with the SHA-256 signature of the previous entry, establishing a tamper-proof chain of custody for pharmaceutical compliance (CFR Part 11).")
+    
+    if not df_hist.empty:
+        for idx, row in df_hist.head(5).iterrows():
+            st.markdown(f"""
+            <div class="hash-box">
+                <b>Block ID:</b> {row['id']} | <b>Time:</b> {row['timestamp']} | <b>Temp:</b> {row['cargo_temp']}°C<br>
+                <span style="color:#64748b;">Previous Hash:</span> <code>{row['prev_hash']}</code><br>
+                <span style="color:#0f172a;"><b>Block Hash:</b></span> <code>{row['block_hash']}</code>
+            </div>
+            """, unsafe_allow_html=True)
 
-time.sleep(1.8)
+time.sleep(2)
 st.rerun()
