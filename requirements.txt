@@ -5,3 +5,5 @@ plotly
 fpdf2
 requests
 flask
+scikit-learn
+pydeck
